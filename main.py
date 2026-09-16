@@ -1,5 +1,7 @@
 import os
 import json
+import random
+import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,10 +15,8 @@ from telegram.ext import (
 )
 import google.generativeai as genai
 
-# Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 ADMIN_PASSWORD = "2377451"
@@ -24,11 +24,11 @@ ADMIN_PASSWORD = "2377451"
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Conversation states for Admin Dialog Creation
-AUTH_ADMIN, ADMIN_MENU, DIALOG_NAME, INTRO_VOICE, SEGMENT_VOICE, SEGMENT_TEXT, NEXT_ACTION = range(7)
-
-# Data file path
 DIALOGS_FILE = "dialogs.json"
+
+# Conversation states
+AUTH_ADMIN, ADMIN_MENU, DIALOG_NAME, INTRO_VOICE, SEGMENT_VOICE, SEGMENT_TEXT, NEXT_ACTION = range(7)
+MOCK_CONFIRM, MOCK_PLAYING = range(7, 9)
 
 def load_dialogs():
     if os.path.exists(DIALOGS_FILE):
@@ -40,23 +40,139 @@ def save_dialogs(data):
     with open(DIALOGS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-PROMPT_NAATI = """
-تو یک ممتحن ارشد آزمون NAATI CCL در زبان‌های فارسی و انگلیسی هستی.
-کاربر یک فایل صوتی پاسخ به همراه متن ترجمه مرجع سگمنت را دارد.
-1. ابتدا صدای ارسالی را پیاده‌سازی (Transcript) کن.
-2. آن را با متن ترجمه مرجع مقایسه کن و بر اساس کدهای رسمی NAATI تحلیل کن:
-   - Accuracy (Omissions, Distortions, Insertions)
-   - Quality of Language
-   - Delivery (Pauses, Hesitations)
-3. نمره کسر شده، نمره نهایی سگمنت و نکات اصلاحی را دقیق ذکر کن.
-"""
-
-# --- Public Handlers ---
+# --- Start & Main Menu ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📊 آزمون تعیین سطح (به زودی)", callback_data="disabled")],
+        [InlineKeyboardButton("📖 توضیحات آزمون ناتی از ابتدا تا روز امتحان (به زودی)", callback_data="disabled")],
+        [InlineKeyboardButton("📑 تحلیل کارنامه امتحانی (به زودی)", callback_data="disabled")],
+        [InlineKeyboardButton("🎧 انجام آزمون ماک", callback_data="start_mock")]
+    ]
     await update.message.reply_text(
-        "سلام! به ربات تمرین و ماک آزمون NAATI CCL خوش آمدید.\n"
-        "جهت ورود به پنل مدیریت دستور /admin را ارسال کنید."
+        "سلام! به ربات آمادگی آزمون NAATI CCL خوش آمدید.\nلطفاً گزینه مورد نظر خود را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+async def main_menu_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "disabled":
+        await query.message.reply_text("این بخش به زودی فعال خواهد شد.")
+        return
+
+    if query.data == "start_mock":
+        dialogs = load_dialogs()
+        if not dialogs:
+            await query.message.reply_text("هیچ دیالوگی در سیستم ثبت نشده است. ابتدا از طریق پنل مدیریت دیالوگ اضافه کنید.")
+            return
+
+        # انتخاب یک دیالوگ تصادفی
+        selected_key = random.choice(list(dialogs.keys()))
+        selected_dialog = dialogs[selected_key]
+        context.user_data["active_mock"] = {
+            "dialog": selected_dialog,
+            "current_index": 0,
+            "responses": []
+        }
+
+        keyboard = [
+            [InlineKeyboardButton("✅ بله، آماده‌ام", callback_data="confirm_mock_yes")],
+            [InlineKeyboardButton("❌ انصراف", callback_data="confirm_mock_no")]
+        ]
+        await query.message.reply_text(
+            f"🎯 آزمون ماک آماده است.\nعنوان: **{selected_dialog['name']}**\n\nآیا برای شروع ماک آماده هستید؟",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+# --- Mock Test Flow ---
+async def handle_mock_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_mock_no":
+        await query.message.reply_text("آزمون ماک لغو شد.")
+        return
+
+    if query.data == "confirm_mock_yes":
+        # تایمر ۵ ثانیه‌ای
+        msg = await query.message.reply_text("⏱ آزمون در حال شروع است... 5")
+        for i in range(4, 0, -1):
+            await asyncio.sleep(1)
+            await msg.edit_text(f"⏱ آزمون در حال شروع است... {i}")
+        await asyncio.sleep(1)
+        await msg.edit_text("🚀 آزمون شروع شد!")
+
+        # پخش فایل Introduction
+        mock_data = context.user_data["active_mock"]
+        intro_id = mock_data["dialog"]["intro_file_id"]
+        await query.message.reply_voice(voice=intro_id, caption="🎙 فایل Introduction")
+
+        # پخش سگمنت اول
+        await send_next_mock_segment(update, context)
+
+async def send_next_mock_segment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    mock_data = context.user_data.get("active_mock")
+    if not mock_data:
+        return
+
+    idx = mock_data["current_index"]
+    segments = mock_data["dialog"]["segments"]
+
+    if idx >= len(segments):
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="🎉 آزمون ماک به پایان رسید. پاسخ‌های شما جهت ارزیابی پردازش خواهند شد."
+        )
+        return
+
+    seg = segments[idx]
+    await context.bot.send_voice(
+        chat_id=update.effective_chat.id,
+        voice=seg["voice_id"],
+        caption=f"🎧 سگمنت شماره {idx + 1}"
+    )
+    
+    msg_prompt = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="🎙 ۱۰ ثانیه فرصت دارید پاسخ صوتی خود را ضبط و ارسال کنید..."
+    )
+
+    # ذخیره حالت انتظار برای پاسخ
+    context.user_data["waiting_for_voice"] = True
+    current_idx = idx
+
+    # تایمر ۱۰ ثانیه در سرور
+    await asyncio.sleep(10)
+
+    # اگر کاربر در این ۱۰ ثانیه وویس نفرستاده باشد:
+    if context.user_data.get("waiting_for_voice") and mock_data["current_index"] == current_idx:
+        context.user_data["waiting_for_voice"] = False
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⚠️ زمانی برای این سگمنت ضبط نشد. رفتن به سگمنت بعدی..."
+        )
+        mock_data["current_index"] += 1
+        await send_next_mock_segment(update, context)
+
+async def handle_user_mock_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("waiting_for_voice"):
+        return
+
+    context.user_data["waiting_for_voice"] = False
+    mock_data = context.user_data.get("active_mock")
+    
+    voice_file = update.message.voice
+    mock_data["responses"].append({
+        "segment_index": mock_data["current_index"],
+        "voice_id": voice_file.file_id
+    })
+
+    await update.message.reply_text("✅ پاسخ صوتی شما دریافت شد.")
+    mock_data["current_index"] += 1
+    await send_next_mock_segment(update, context)
 
 # --- Admin Flow ---
 async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,13 +188,12 @@ async def auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ ورود موفقیت‌آمیز بود. گزینه مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
         return ADMIN_MENU
     else:
-        await update.message.reply_text("❌ رمز عبور اشتباه است. دسترسی رد شد.")
+        await update.message.reply_text("❌ رمز عبور اشتباه است.")
         return ConversationHandler.END
 
 async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "add_dialog":
         context.user_data["new_dialog"] = {"segments": []}
         await query.message.reply_text("📝 لطفاً نام/عنوان دیالوگ را وارد کنید:")
@@ -91,13 +206,13 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             msg = "📋 **لیست دیالوگ‌های ثبت‌شده:**\n\n"
             for d_id, d_info in dialogs.items():
                 msg += f"🔹 {d_info['name']} ({len(d_info['segments'])} سگمنت)\n"
-            await query.message.reply_text(msg)
+            await query.message.reply_text(msg, parse_mode="Markdown")
         return ADMIN_MENU
 
 async def get_dialog_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
     context.user_data["new_dialog"]["name"] = name
-    await update.message.reply_text(f"عنوان «{name}» ثبت شد.\n\n🎙 اکنون فایل صوتی **Introduction** (مقدمه دیالوگ) را ارسال کنید:")
+    await update.message.reply_text(f"عنوان «{name}» ثبت شد.\n\n🎙 اکنون فایل صوتی **Introduction** را ارسال کنید:")
     return INTRO_VOICE
 
 async def get_intro_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,30 +220,24 @@ async def get_intro_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not voice_file:
         await update.message.reply_text("لطفاً یک فایل صوتی/وویس ارسال کنید.")
         return INTRO_VOICE
-
-    file_id = voice_file.file_id
-    context.user_data["new_dialog"]["intro_file_id"] = file_id
-    
+    context.user_data["new_dialog"]["intro_file_id"] = voice_file.file_id
     await update.message.reply_text("✅ فایل صوتی Introduction ثبت شد.\n\n🎙 اکنون فایل صوتی **سگمنت اول** را ارسال کنید:")
     return SEGMENT_VOICE
 
 async def get_segment_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice_file = update.message.voice or update.message.audio
     if not voice_file:
-        await update.message.reply_text("لطفاً یک فایل صوتی/وویس برای این سگمنت ارسال کنید.")
+        await update.message.reply_text("لطفاً فایل صوتی سگمنت را ارسال کنید.")
         return SEGMENT_VOICE
-
     seg_num = len(context.user_data["new_dialog"]["segments"]) + 1
     context.user_data["current_segment"] = {"voice_id": voice_file.file_id}
-    
-    await update.message.reply_text(f"✅ وویس سگمنت {seg_num} دریافت شد.\n\n✏️ اکنون **متن ترجمه مرجع** برای سگمنت {seg_num} را ارسال کنید:")
+    await update.message.reply_text(f"✅ وویس سگمنت {seg_num} دریافت شد.\n\n✏️ اکنون **متن ترجمه مرجع** سگمنت {seg_num} را ارسال کنید:")
     return SEGMENT_TEXT
 
 async def get_segment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     current_seg = context.user_data["current_segment"]
     current_seg["translation_text"] = text
-    
     context.user_data["new_dialog"]["segments"].append(current_seg)
     seg_count = len(context.user_data["new_dialog"]["segments"])
 
@@ -137,7 +246,7 @@ async def get_segment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🏁 اتمام دیالوگ", callback_data="finish_dialog")]
     ]
     await update.message.reply_text(
-        f"✅ سگمنت شماره {seg_count} با موفقیت ثبت شد.\nاقدام بعدی را انتخاب کنید:",
+        f"✅ سگمنت {seg_count} ثبت شد.\nاقدام بعدی را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return NEXT_ACTION
@@ -145,7 +254,6 @@ async def get_segment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_next_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "next_segment":
         next_num = len(context.user_data["new_dialog"]["segments"]) + 1
         await query.message.reply_text(f"🎙 لطفاً فایل صوتی **سگمنت {next_num}** را ارسال کنید:")
@@ -155,15 +263,13 @@ async def handle_next_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         dialog_id = f"dialog_{len(dialogs) + 1}"
         dialogs[dialog_id] = context.user_data["new_dialog"]
         save_dialogs(dialogs)
-        
-        await query.message.reply_text(f"🎉 دیالوگ «{context.user_data['new_dialog']['name']}» با {len(context.user_data['new_dialog']['segments'])} سگمنت ذخیره شد.")
+        await query.message.reply_text(f"🎉 دیالوگ «{context.user_data['new_dialog']['name']}» با موفقیت ذخیره شد.")
         return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("عملیات لغو شد.")
     return ConversationHandler.END
 
-# --- Main App ---
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -183,6 +289,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(admin_conv)
+    app.add_handler(CallbackQueryHandler(main_menu_callbacks, pattern="^(disabled|start_mock)$"))
+    app.add_handler(CallbackQueryHandler(handle_mock_confirmation, pattern="^confirm_mock_"))
+    app.add_handler(MessageHandler(filters.VOICE, handle_user_mock_voice))
 
     print("Bot started...")
     app.run_polling()
