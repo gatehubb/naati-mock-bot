@@ -28,7 +28,6 @@ DIALOGS_FILE = "dialogs.json"
 
 # Conversation states
 AUTH_ADMIN, ADMIN_MENU, DIALOG_NAME, INTRO_VOICE, SEGMENT_VOICE, SEGMENT_TEXT, NEXT_ACTION = range(7)
-MOCK_CONFIRM, MOCK_PLAYING = range(7, 9)
 
 def load_dialogs():
     if os.path.exists(DIALOGS_FILE):
@@ -96,7 +95,7 @@ async def handle_mock_confirmation(update: Update, context: ContextTypes.DEFAULT
         return
 
     if query.data == "confirm_mock_yes":
-        # تایمر ۵ ثانیه‌ای
+        # تایمر ۵ ثانیه‌ای شمارش معکوس
         msg = await query.message.reply_text("⏱ آزمون در حال شروع است... 5")
         for i in range(4, 0, -1):
             await asyncio.sleep(1)
@@ -113,7 +112,7 @@ async def handle_mock_confirmation(update: Update, context: ContextTypes.DEFAULT
         await send_next_mock_segment(update, context)
 
 async def send_next_mock_segment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    chat_id = update.effective_chat.id
     mock_data = context.user_data.get("active_mock")
     if not mock_data:
         return
@@ -123,48 +122,29 @@ async def send_next_mock_segment(update: Update, context: ContextTypes.DEFAULT_T
 
     if idx >= len(segments):
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text="🎉 آزمون ماک به پایان رسید. پاسخ‌های شما جهت ارزیابی پردازش خواهند شد."
         )
+        context.user_data["in_mock"] = False
         return
 
     seg = segments[idx]
     await context.bot.send_voice(
-        chat_id=update.effective_chat.id,
+        chat_id=chat_id,
         voice=seg["voice_id"],
-        caption=f"🎧 سگمنت شماره {idx + 1}"
+        caption=f"🎧 سگمنت شماره {idx + 1}\n\n🎙 لطفاً پاسخ صوتی خود را ضبط و ارسال کنید..."
     )
-    
-    msg_prompt = await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="🎙 ۱۰ ثانیه فرصت دارید پاسخ صوتی خود را ضبط و ارسال کنید..."
-    )
-
-    # ذخیره حالت انتظار برای پاسخ
-    context.user_data["waiting_for_voice"] = True
-    current_idx = idx
-
-    # تایمر ۱۰ ثانیه در سرور
-    await asyncio.sleep(10)
-
-    # اگر کاربر در این ۱۰ ثانیه وویس نفرستاده باشد:
-    if context.user_data.get("waiting_for_voice") and mock_data["current_index"] == current_idx:
-        context.user_data["waiting_for_voice"] = False
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="⚠️ زمانی برای این سگمنت ضبط نشد. رفتن به سگمنت بعدی..."
-        )
-        mock_data["current_index"] += 1
-        await send_next_mock_segment(update, context)
+    context.user_data["in_mock"] = True
 
 async def handle_user_mock_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("waiting_for_voice"):
+    # چک می‌کند که آیا کاربر در حال انجام آزمون ماک هست یا خیر
+    if not context.user_data.get("in_mock"):
+        await update.message.reply_text("برای شروع تمرین یا ماک، از منوی اصلی اقدام کنید.")
         return
 
-    context.user_data["waiting_for_voice"] = False
     mock_data = context.user_data.get("active_mock")
-    
     voice_file = update.message.voice
+    
     mock_data["responses"].append({
         "segment_index": mock_data["current_index"],
         "voice_id": voice_file.file_id
@@ -172,6 +152,8 @@ async def handle_user_mock_voice(update: Update, context: ContextTypes.DEFAULT_T
 
     await update.message.reply_text("✅ پاسخ صوتی شما دریافت شد.")
     mock_data["current_index"] += 1
+    
+    # بلافاصله سگمنت بعدی فرستاده می‌شود
     await send_next_mock_segment(update, context)
 
 # --- Admin Flow ---
