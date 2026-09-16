@@ -13,6 +13,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.request import HTTPXRequest
 import google.generativeai as genai
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -26,7 +27,6 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 
 DIALOGS_FILE = "dialogs.json"
 
-# Conversation states
 AUTH_ADMIN, ADMIN_MENU, DIALOG_NAME, INTRO_VOICE, SEGMENT_VOICE, SEGMENT_TEXT, NEXT_ACTION = range(7)
 
 def load_dialogs():
@@ -66,7 +66,6 @@ async def main_menu_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.message.reply_text("هیچ دیالوگی در سیستم ثبت نشده است. ابتدا از طریق پنل مدیریت دیالوگ اضافه کنید.")
             return
 
-        # انتخاب یک دیالوگ تصادفی
         selected_key = random.choice(list(dialogs.keys()))
         selected_dialog = dialogs[selected_key]
         context.user_data["active_mock"] = {
@@ -95,7 +94,6 @@ async def handle_mock_confirmation(update: Update, context: ContextTypes.DEFAULT
         return
 
     if query.data == "confirm_mock_yes":
-        # تایمر ۵ ثانیه‌ای شمارش معکوس
         msg = await query.message.reply_text("⏱ آزمون در حال شروع است... 5")
         for i in range(4, 0, -1):
             await asyncio.sleep(1)
@@ -103,12 +101,10 @@ async def handle_mock_confirmation(update: Update, context: ContextTypes.DEFAULT
         await asyncio.sleep(1)
         await msg.edit_text("🚀 آزمون شروع شد!")
 
-        # پخش فایل Introduction
         mock_data = context.user_data["active_mock"]
         intro_id = mock_data["dialog"]["intro_file_id"]
         await query.message.reply_voice(voice=intro_id, caption="🎙 فایل Introduction")
 
-        # پخش سگمنت اول
         await send_next_mock_segment(update, context)
 
 async def send_next_mock_segment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -137,7 +133,6 @@ async def send_next_mock_segment(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["in_mock"] = True
 
 async def handle_user_mock_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # چک می‌کند که آیا کاربر در حال انجام آزمون ماک هست یا خیر
     if not context.user_data.get("in_mock"):
         await update.message.reply_text("برای شروع تمرین یا ماک، از منوی اصلی اقدام کنید.")
         return
@@ -153,7 +148,6 @@ async def handle_user_mock_voice(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text("✅ پاسخ صوتی شما دریافت شد.")
     mock_data["current_index"] += 1
     
-    # بلافاصله سگمنت بعدی فرستاده می‌شود
     await send_next_mock_segment(update, context)
 
 # --- Admin Flow ---
@@ -253,7 +247,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # افزایش تایم‌آوت و قابلیت تلاش مجدد برای جلوگیری از خطای شبکه Bad Gateway
+    request = HTTPXRequest(connect_timeout=20, read_timeout=20)
+    app = Application.builder().token(TELEGRAM_TOKEN).request(request).build()
 
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start)],
